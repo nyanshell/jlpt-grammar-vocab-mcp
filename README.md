@@ -15,10 +15,10 @@ the database over time through the `add_*` / `update_*` tools.
 | Tool | Purpose |
 |---|---|
 | `search_grammar` / `get_grammar` / `list_grammar` | Find and read grammar points (with examples and SRS state) |
-| `search_vocab` | Find vocabulary |
+| `search_vocab` / `list_vocab` | Find and browse vocabulary |
 | `add_grammar` / `update_grammar` / `add_example` | Grow and refine grammar content |
 | `add_vocab` / `update_vocab` | Grow vocabulary content |
-| `get_due_reviews` | Items due for review today, plus a few never-studied items |
+| `get_due_reviews` | Items due for review today, plus a few never-studied items; filterable to grammar or vocab only |
 | `record_review` | Record a review result (quality 0–5) and reschedule with SM-2 |
 | `get_study_summary` | Progress counts, reviews today / this week, due counts |
 

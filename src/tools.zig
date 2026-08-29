@@ -65,6 +65,14 @@ pub const registry = [_]Tool{
         .handler = searchVocab,
     },
     .{
+        .name = "list_vocab",
+        .description = "List vocabulary words, optionally filtered by learning status (new, learning, review, mastered). Paginated.",
+        .input_schema =
+        \\{"type":"object","properties":{"status":{"type":"string","enum":["new","learning","review","mastered"]},"offset":{"type":"integer","default":0},"limit":{"type":"integer","default":20}}}
+        ,
+        .handler = listVocab,
+    },
+    .{
         .name = "add_grammar",
         .description = "Add a new grammar point to the study database.",
         .input_schema =
@@ -106,9 +114,9 @@ pub const registry = [_]Tool{
     },
     .{
         .name = "get_due_reviews",
-        .description = "Get items due for spaced-repetition review today (ordered by due date), plus a few never-studied items. Use get_grammar for full details and examples.",
+        .description = "Get items due for spaced-repetition review today (ordered by due date), plus a few never-studied items. Optionally restrict to grammar or vocab only. Use get_grammar for full details and examples.",
         .input_schema =
-        \\{"type":"object","properties":{"limit":{"type":"integer","default":20},"include_new":{"type":"boolean","default":true},"new_limit":{"type":"integer","default":5}}}
+        \\{"type":"object","properties":{"item_type":{"type":"string","enum":["grammar","vocab"],"description":"Restrict to one item type"},"limit":{"type":"integer","default":20},"include_new":{"type":"boolean","default":true},"new_limit":{"type":"integer","default":5}}}
         ,
         .handler = getDueReviews,
     },
@@ -423,6 +431,59 @@ fn writeSearchVocab(s: *Json, rows: db_mod.Rows) !void {
     try s.endObject();
 }
 
+fn listVocab(ctx: *Ctx, args: ?std.json.Value) HandlerError!Outcome {
+    const offset = @max(0, argInt(args, "offset") orelse 0);
+    const limit = clampLimit(argInt(args, "limit"), 20);
+    const status = argStr(args, "status");
+    if (status) |st| {
+        var ok = false;
+        for (valid_statuses) |v| ok = ok or std.mem.eql(u8, v, st);
+        if (!ok) return .{ .err = "invalid status: must be new, learning, review, or mastered" };
+    }
+
+    const filter = status orelse "%";
+    const total_rows = try ctx.db.query(ctx.arena,
+        \\SELECT count(*) AS n
+        \\FROM vocab v
+        \\LEFT JOIN learning_status ls ON ls.item_type = 'vocab' AND ls.item_id = v.id
+        \\WHERE coalesce(ls.status, 'new') LIKE ?
+    , &.{.{ .text = filter }});
+    const total = total_rows.getInt(0, "n") orelse 0;
+
+    const rows = try ctx.db.query(ctx.arena,
+        \\SELECT v.id, v.word, v.reading, v.meaning, v.part_of_speech, coalesce(ls.status, 'new') AS status
+        \\FROM vocab v
+        \\LEFT JOIN learning_status ls ON ls.item_type = 'vocab' AND ls.item_id = v.id
+        \\WHERE coalesce(ls.status, 'new') LIKE ?
+        \\ORDER BY v.id
+        \\LIMIT ? OFFSET ?
+    , &.{ .{ .text = filter }, .{ .int = limit }, .{ .int = offset } });
+
+    var p: Payload = undefined;
+    p.init(ctx.arena);
+    writeListVocab(&p.s, total, offset, rows) catch return error.OutOfMemory;
+    return p.finish();
+}
+
+fn writeListVocab(s: *Json, total: i64, offset: i64, rows: db_mod.Rows) !void {
+    const cols = [_]Col{
+        .{ .name = "id", .kind = .int },
+        .{ .name = "word" },
+        .{ .name = "reading" },
+        .{ .name = "meaning" },
+        .{ .name = "part_of_speech" },
+        .{ .name = "status" },
+    };
+    try s.beginObject();
+    try s.objectField("total");
+    try s.write(total);
+    try s.objectField("offset");
+    try s.write(offset);
+    try s.objectField("items");
+    try writeRowsArray(s, rows, &cols);
+    try s.endObject();
+}
+
 // --- content editing tools ----------------------------------------------
 
 fn textOrNull(args: ?std.json.Value, name: []const u8) db_mod.Param {
@@ -552,6 +613,11 @@ fn getDueReviews(ctx: *Ctx, args: ?std.json.Value) HandlerError!Outcome {
     const limit = clampLimit(argInt(args, "limit"), 20);
     const include_new = argBool(args, "include_new") orelse true;
     const new_limit = clampLimit(argInt(args, "new_limit"), 5);
+    const type_filter = argStr(args, "item_type") orelse "%";
+    if (argStr(args, "item_type")) |t| {
+        if (!std.mem.eql(u8, t, "grammar") and !std.mem.eql(u8, t, "vocab"))
+            return .{ .err = "item_type must be grammar or vocab" };
+    }
 
     const due = try ctx.db.query(ctx.arena,
         \\SELECT * FROM (
@@ -564,10 +630,10 @@ fn getDueReviews(ctx: *Ctx, args: ?std.json.Value) HandlerError!Outcome {
         \\  FROM learning_status ls
         \\  JOIN vocab v ON v.id = ls.item_id AND ls.item_type = 'vocab'
         \\)
-        \\WHERE due_date <= CURRENT_DATE
+        \\WHERE due_date <= CURRENT_DATE AND item_type LIKE ?
         \\ORDER BY due_date, item_type, item_id
         \\LIMIT ?
-    , &.{.{ .int = limit }});
+    , &.{ .{ .text = type_filter }, .{ .int = limit } });
 
     const fresh = if (include_new) try ctx.db.query(ctx.arena,
         \\SELECT * FROM (
@@ -581,9 +647,10 @@ fn getDueReviews(ctx: *Ctx, args: ?std.json.Value) HandlerError!Outcome {
         \\  LEFT JOIN learning_status ls ON ls.item_type = 'vocab' AND ls.item_id = v.id
         \\  WHERE ls.item_id IS NULL
         \\)
+        \\WHERE item_type LIKE ?
         \\ORDER BY item_type, item_id
         \\LIMIT ?
-    , &.{.{ .int = new_limit }}) else db_mod.Rows.empty;
+    , &.{ .{ .text = type_filter }, .{ .int = new_limit } }) else db_mod.Rows.empty;
 
     var p: Payload = undefined;
     p.init(ctx.arena);
@@ -868,6 +935,12 @@ test "record_review advances SM-2 and get_due_reviews sees it" {
     try std.testing.expectEqual(@as(usize, 0), due.object.get("due").?.array.items.len);
     try std.testing.expectEqual(@as(usize, 2), due.object.get("new").?.array.items.len);
 
+    // item_type filter: only the unreviewed vocab word remains.
+    const vocab_only = try env.call("get_due_reviews", "{\"item_type\":\"vocab\"}");
+    const vocab_new = vocab_only.object.get("new").?.array;
+    try std.testing.expectEqual(@as(usize, 1), vocab_new.items.len);
+    try std.testing.expectEqualStrings("vocab", vocab_new.items[0].object.get("item_type").?.string);
+
     const bad = try env.callExpectError("record_review", "{\"item_type\":\"grammar\",\"item_id\":999,\"quality\":5}");
     try std.testing.expect(std.mem.indexOf(u8, bad, "not found") != null);
 }
@@ -897,4 +970,10 @@ test "add, update, and summary tools" {
 
     const no_fields = try env.callExpectError("update_vocab", "{\"id\":1}");
     try std.testing.expectEqualStrings("no fields to update", no_fields);
+
+    const listed = try env.call("list_vocab", "{}");
+    try std.testing.expectEqual(@as(i64, 2), listed.object.get("total").?.integer);
+    const reviewed = try env.call("list_vocab", "{\"status\":\"review\"}");
+    try std.testing.expectEqual(@as(i64, 1), reviewed.object.get("total").?.integer);
+    try std.testing.expectEqualStrings("顕著", reviewed.object.get("items").?.array.items[0].object.get("word").?.string);
 }
