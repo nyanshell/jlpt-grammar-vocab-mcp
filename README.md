@@ -86,7 +86,8 @@ the Dockerfile defaults to a community mirror and accepts
 ## Connecting Claude
 
 1. Deploy the container behind HTTPS (a reverse proxy, Fly.io, Cloud Run, etc. —
-   Claude requires TLS).
+   Claude requires TLS). An nginx vhost for a Cloudflare → VPS → WireGuard
+   setup is provided in `deploy/jlpt-mcp.nginx.conf`.
 2. In Claude: **Settings → Connectors → Add custom connector**, with URL
    `https://your-host/mcp/<MCP_SECRET>`. No OAuth configuration is needed.
 3. Ask Claude to quiz you: it will call `get_due_reviews`, present items, and
