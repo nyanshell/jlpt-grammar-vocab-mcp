@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0-dev.2682+02142a54d
+
+      - name: Cache fetched packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            zig-pkg
+            ~/.cache/zig
+          key: zig-deps-${{ hashFiles('build.zig.zon') }}
+
+      - name: Check formatting
+        run: zig fmt --check build.zig src
+
+      - name: Build
+        run: zig build
+
+      - name: Test
+        run: zig build test
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: build-test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t jlpt-mcp-server .
