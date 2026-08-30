@@ -49,7 +49,7 @@ Generate a secret with e.g. `openssl rand -hex 24`.
 ## Build and run locally
 
 Requires Zig `0.17.0-dev.1933+e19a73c2d` (pinned; see notes below). The pinned
-`libduckdb` v1.4.1 release zip is fetched automatically by the Zig package
+`libduckdb` v1.5.5 release zip is fetched automatically by the Zig package
 manager. To keep the toolchain out of your home directory, extract it into the
 (gitignored) `toolchain/` folder:
 
@@ -77,6 +77,18 @@ curl -X POST localhost:8080/mcp/$MCP_SECRET -H 'content-type: application/json' 
 ```
 
 ## Docker
+
+CI publishes the image to GHCR on every push to master (`latest` + `sha-*` tags)
+and on `v*` git tags (semver tags):
+
+```sh
+docker pull ghcr.io/nyanshell/jlpt-grammar-vocab-mcp:latest
+```
+
+If the GHCR package is private, `docker login ghcr.io` with a token that has
+`read:packages` first — or flip the package to public in its GitHub settings.
+
+Or build locally:
 
 ```sh
 docker build -t jlpt-mcp-server .
@@ -134,7 +146,7 @@ Single user by design: no users table, no sessions.
   step and imported as the `duckdb_c` module — and renamed `Allocator.dupeZ` to
   `dupeSentinel`).
 - **DuckDB API level.** `src/db.zig` uses the materialized value API
-  (`duckdb_value_varchar` etc.), deprecated upstream but shipped in v1.4.x.
+  (`duckdb_value_varchar` etc.), deprecated upstream but shipped in v1.5.x.
   Result sets here are tiny; a future move to `duckdb_fetch_chunk` is contained
   in that one file.
 - **Memory.** One arena per HTTP request; DuckDB C strings are duped into the
