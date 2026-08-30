@@ -111,6 +111,12 @@ Single user by design: no users table, no sessions.
 
 ## Engineering notes
 
+- **Tests.** Following Zig convention there is no separate `tests/` directory:
+  `test { ... }` blocks live next to the code they cover in each `src/*.zig`
+  file, and `src/main.zig` imports every module so `zig build test` runs them
+  all. Pure logic (SM-2, routing, JSON-RPC envelopes) is unit-tested directly;
+  the DB layer, tool handlers, and MCP dispatch are integration-tested against
+  an in-memory DuckDB (`:memory:`).
 - **Zig version pinning.** The code targets the post-“Writergate” `std.Io` API
   (0.16-dev): `main(init: std.process.Init)`, `std.Io.net`, `std.json.Stringify`,
   buffer-fed readers/writers. CI (`mlugg/setup-zig`) and the Dockerfile pin the

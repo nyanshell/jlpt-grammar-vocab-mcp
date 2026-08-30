@@ -252,3 +252,69 @@ test "sql errors carry a message" {
     try std.testing.expectError(error.DuckDb, db.exec("SELECT nonsense FROM missing_table"));
     try std.testing.expect(db.lastError().len > 0);
 }
+
+test "param binding round-trips int, float, text, and null" {
+    var db = try Db.open(":memory:");
+    defer db.close();
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const rows = try db.query(arena, "SELECT ? AS i, ? AS f, ? AS t, ? AS n", &.{
+        .{ .int = -42 },
+        .{ .float = 2.5 },
+        .{ .text = "こんにちは" },
+        .nul,
+    });
+    try std.testing.expectEqual(@as(i64, -42), rows.getInt(0, "i").?);
+    try std.testing.expectEqual(@as(f64, 2.5), rows.getFloat(0, "f").?);
+    try std.testing.expectEqualStrings("こんにちは", rows.get(0, "t").?);
+    try std.testing.expect(rows.get(0, "n") == null);
+}
+
+test "colIndex misses return null; getInt on non-numeric text returns null" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var db = try Db.open(":memory:");
+    defer db.close();
+    const rows = try db.query(arena, "SELECT 'abc' AS s", &.{});
+    try std.testing.expect(rows.colIndex("missing") == null);
+    try std.testing.expect(rows.getInt(0, "s") == null);
+    try std.testing.expect(rows.getFloat(0, "s") == null);
+    try std.testing.expectEqual(@as(usize, 0), Rows.empty.row_count);
+}
+
+test "migrate seeds an empty database exactly once" {
+    var db = try Db.open(":memory:");
+    defer db.close();
+    const seed: [:0]const u8 =
+        \\INSERT INTO grammar_points (id, pattern, meaning) VALUES (1, 'x', 'y');
+    ;
+    try migrate(&db, seed);
+    // A second migrate must be a no-op: the table is no longer empty.
+    try migrate(&db, seed);
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const rows = try db.query(arena_state.allocator(), "SELECT count(*) AS n FROM grammar_points", &.{});
+    try std.testing.expectEqual(@as(i64, 1), rows.getInt(0, "n").?);
+}
+
+test "migrate rolls back a failing seed" {
+    var db = try Db.open(":memory:");
+    defer db.close();
+    const bad_seed: [:0]const u8 =
+        \\INSERT INTO grammar_points (id, pattern, meaning) VALUES (1, 'x', 'y');
+        \\INSERT INTO no_such_table VALUES (1);
+    ;
+    try std.testing.expectError(error.DuckDb, migrate(&db, bad_seed));
+
+    // The partial insert must not survive; a later migrate can still seed.
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const rows = try db.query(arena_state.allocator(), "SELECT count(*) AS n FROM grammar_points", &.{});
+    try std.testing.expectEqual(@as(i64, 0), rows.getInt(0, "n").?);
+}

@@ -977,3 +977,144 @@ test "add, update, and summary tools" {
     try std.testing.expectEqual(@as(i64, 1), reviewed.object.get("total").?.integer);
     try std.testing.expectEqualStrings("顕著", reviewed.object.get("items").?.array.items[0].object.get("word").?.string);
 }
+
+test "argument helpers coerce and clamp" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const args = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena_state.allocator(),
+        \\{"s":"x","i":3,"f_whole":4.0,"f_frac":4.5,"b":true}
+    ,
+        .{},
+    );
+
+    try std.testing.expectEqualStrings("x", argStr(args, "s").?);
+    try std.testing.expect(argStr(args, "i") == null); // wrong type
+    try std.testing.expect(argStr(args, "missing") == null);
+    try std.testing.expect(argStr(null, "s") == null);
+    try std.testing.expectEqual(@as(i64, 3), argInt(args, "i").?);
+    // Clients often send integers as JSON floats; whole floats coerce.
+    try std.testing.expectEqual(@as(i64, 4), argInt(args, "f_whole").?);
+    try std.testing.expect(argInt(args, "f_frac") == null);
+    try std.testing.expectEqual(true, argBool(args, "b").?);
+
+    try std.testing.expectEqual(@as(i64, 10), clampLimit(null, 10));
+    try std.testing.expectEqual(@as(i64, 1), clampLimit(0, 10));
+    try std.testing.expectEqual(@as(i64, 1), clampLimit(-5, 10));
+    try std.testing.expectEqual(@as(i64, 100), clampLimit(5000, 10));
+}
+
+test "handlers reject missing and invalid arguments" {
+    var env: TestEnv = undefined;
+    try env.init();
+    defer env.deinit();
+
+    const cases = [_]struct { tool: []const u8, args: []const u8, expect: []const u8 }{
+        .{ .tool = "search_grammar", .args = "{}", .expect = "missing required argument: query" },
+        .{ .tool = "get_grammar", .args = "{}", .expect = "missing required argument: id" },
+        .{ .tool = "add_grammar", .args = "{\"pattern\":\"x\"}", .expect = "missing required argument: meaning" },
+        .{ .tool = "add_vocab", .args = "{\"word\":\"x\",\"reading\":\"y\"}", .expect = "missing required argument: meaning" },
+        .{ .tool = "list_grammar", .args = "{\"status\":\"bogus\"}", .expect = "invalid status: must be new, learning, review, or mastered" },
+        .{ .tool = "list_vocab", .args = "{\"status\":\"bogus\"}", .expect = "invalid status: must be new, learning, review, or mastered" },
+        .{ .tool = "get_due_reviews", .args = "{\"item_type\":\"kanji\"}", .expect = "item_type must be grammar or vocab" },
+        .{ .tool = "record_review", .args = "{\"item_type\":\"kanji\",\"item_id\":1,\"quality\":4}", .expect = "item_type must be grammar or vocab" },
+        .{ .tool = "record_review", .args = "{\"item_type\":\"grammar\",\"item_id\":1,\"quality\":6}", .expect = "quality must be between 0 and 5" },
+        .{ .tool = "record_review", .args = "{\"item_type\":\"grammar\",\"item_id\":1,\"quality\":-1}", .expect = "quality must be between 0 and 5" },
+        .{ .tool = "update_grammar", .args = "{\"nuance\":\"x\"}", .expect = "missing required argument: id" },
+    };
+    for (cases) |case| {
+        const msg = try env.callExpectError(case.tool, case.args);
+        try std.testing.expectEqualStrings(case.expect, msg);
+    }
+}
+
+test "list_grammar paginates in id order" {
+    var env: TestEnv = undefined;
+    try env.init();
+    defer env.deinit();
+
+    const page = try env.call("list_grammar", "{\"limit\":1,\"offset\":1}");
+    try std.testing.expectEqual(@as(i64, 2), page.object.get("total").?.integer);
+    try std.testing.expectEqual(@as(i64, 1), page.object.get("offset").?.integer);
+    const items = page.object.get("items").?.array;
+    try std.testing.expectEqual(@as(usize, 1), items.items.len);
+    try std.testing.expectEqualStrings("〜をよそに", items.items[0].object.get("pattern").?.string);
+
+    // Past the end: empty page, same total.
+    const beyond = try env.call("list_grammar", "{\"offset\":10}");
+    try std.testing.expectEqual(@as(i64, 2), beyond.object.get("total").?.integer);
+    try std.testing.expectEqual(@as(usize, 0), beyond.object.get("items").?.array.items.len);
+}
+
+test "search_vocab matches word, reading, and meaning" {
+    var env: TestEnv = undefined;
+    try env.init();
+    defer env.deinit();
+
+    for ([_][]const u8{ "顕著", "けんちょ", "striking" }) |term| {
+        var buf: [64]u8 = undefined;
+        const args = try std.fmt.bufPrint(&buf, "{{\"query\":\"{s}\"}}", .{term});
+        const found = try env.call("search_vocab", args);
+        const results = found.object.get("results").?.array;
+        try std.testing.expectEqual(@as(usize, 1), results.items.len);
+        try std.testing.expectEqualStrings("顕著", results.items[0].object.get("word").?.string);
+    }
+
+    const nothing = try env.call("search_vocab", "{\"query\":\"zzz-no-match\"}");
+    try std.testing.expectEqual(@as(usize, 0), nothing.object.get("results").?.array.items.len);
+}
+
+test "add_example verifies the grammar point and appears in get_grammar" {
+    var env: TestEnv = undefined;
+    try env.init();
+    defer env.deinit();
+
+    const orphan = try env.callExpectError(
+        "add_example",
+        "{\"grammar_id\":999,\"japanese\":\"x\",\"english\":\"y\"}",
+    );
+    try std.testing.expectEqualStrings("grammar point 999 not found", orphan);
+
+    const added = try env.call(
+        "add_example",
+        "{\"grammar_id\":2,\"japanese\":\"親の心配をよそに、彼は旅に出た。\",\"english\":\"Ignoring his parents' worries, he set off on a journey.\"}",
+    );
+    try std.testing.expect(added.object.get("id").?.integer >= 10001);
+
+    const g = try env.call("get_grammar", "{\"id\":2}");
+    const examples = g.object.get("examples").?.array;
+    try std.testing.expectEqual(@as(usize, 1), examples.items.len);
+    // The optional reading was omitted and must come back as null, not "".
+    try std.testing.expect(examples.items[0].object.get("reading").? == .null);
+}
+
+test "updates change only the provided whitelisted fields" {
+    var env: TestEnv = undefined;
+    try env.init();
+    defer env.deinit();
+
+    const updated = try env.call("update_vocab", "{\"id\":1,\"meaning\":\"notable; prominent\"}");
+    try std.testing.expect(updated.object.get("updated").?.bool);
+
+    const found = try env.call("search_vocab", "{\"query\":\"prominent\"}");
+    const row = found.object.get("results").?.array.items[0].object;
+    try std.testing.expectEqualStrings("顕著", row.get("word").?.string); // untouched
+    try std.testing.expectEqualStrings("notable; prominent", row.get("meaning").?.string);
+
+    const missing = try env.callExpectError("update_vocab", "{\"id\":999,\"meaning\":\"x\"}");
+    try std.testing.expectEqualStrings("vocab id 999 not found", missing);
+}
+
+test "get_due_reviews respects include_new and new_limit" {
+    var env: TestEnv = undefined;
+    try env.init();
+    defer env.deinit();
+
+    const quiet = try env.call("get_due_reviews", "{\"include_new\":false}");
+    try std.testing.expectEqual(@as(usize, 0), quiet.object.get("due").?.array.items.len);
+    try std.testing.expectEqual(@as(usize, 0), quiet.object.get("new").?.array.items.len);
+
+    const capped = try env.call("get_due_reviews", "{\"new_limit\":1}");
+    try std.testing.expectEqual(@as(usize, 1), capped.object.get("new").?.array.items.len);
+}

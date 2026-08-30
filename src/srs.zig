@@ -77,6 +77,34 @@ test "ease factor never drops below 1.3" {
     try std.testing.expectEqual(@as(f64, 1.3), s.ease_factor);
 }
 
+test "quality 4 leaves the ease factor unchanged" {
+    // SM-2's delta is 0.1 - (5-q)(0.08 + (5-q)*0.02); at q=4 that is exactly 0.
+    const s = apply(State.fresh, 4);
+    try std.testing.expectEqual(@as(f64, 2.5), s.ease_factor);
+}
+
+test "steady quality-4 reviews reach mastery" {
+    var s = State.fresh;
+    var reviews: u32 = 0;
+    while (s.interval_days < mastered_interval_days) : (reviews += 1) {
+        try std.testing.expect(reviews < 10); // must converge quickly
+        s = apply(s, 4);
+    }
+    // 1, 6, 15, 38: mastered on the fourth successful review.
+    try std.testing.expectEqual(@as(u32, 4), reviews);
+    try std.testing.expectEqualStrings("mastered", status(s, 4));
+}
+
+test "interval growth is monotonic while succeeding" {
+    var s = apply(State.fresh, 3);
+    for (0..8) |_| {
+        const next = apply(s, 3);
+        try std.testing.expect(next.interval_days >= s.interval_days);
+        try std.testing.expect(next.ease_factor >= 1.3);
+        s = next;
+    }
+}
+
 test "status derivation" {
     try std.testing.expectEqualStrings("learning", status(.{ .ease_factor = 2.5, .interval_days = 30, .repetitions = 5 }, 2));
     try std.testing.expectEqualStrings("review", status(.{ .ease_factor = 2.5, .interval_days = 6, .repetitions = 2 }, 4));

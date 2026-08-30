@@ -114,6 +114,33 @@ test "parse rejects garbage, arrays, and missing method" {
     try std.testing.expectEqual(code_parse_error, (try parse(arena, "{nope")).invalid.code);
     try std.testing.expectEqual(code_invalid_request, (try parse(arena, "[]")).invalid.code);
     try std.testing.expectEqual(code_invalid_request, (try parse(arena, "{\"id\":1}")).invalid.code);
+    try std.testing.expectEqual(code_invalid_request, (try parse(arena, "{\"method\":5}")).invalid.code);
+    try std.testing.expectEqual(code_invalid_request, (try parse(arena, "\"ping\"")).invalid.code);
+}
+
+test "string ids survive the round trip" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const r = try parse(arena, "{\"jsonrpc\":\"2.0\",\"id\":\"req-9\",\"method\":\"ping\"}");
+    try std.testing.expectEqualStrings("req-9", r.request.id.string);
+
+    const ok = try success(arena, r.request.id, "{}");
+    try std.testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"id\":\"req-9\",\"result\":{}}", ok);
+}
+
+test "failure escapes the error message" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const bad = try failure(arena, .{ .integer = 1 }, code_internal_error, "quote \" and \\ backslash");
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena, bad, .{});
+    try std.testing.expectEqualStrings(
+        "quote \" and \\ backslash",
+        parsed.object.get("error").?.object.get("message").?.string,
+    );
 }
 
 test "success and failure envelopes are well-formed JSON" {
