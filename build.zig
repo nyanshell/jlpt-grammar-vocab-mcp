@@ -17,16 +17,29 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
-    if (duckdb_lib_dir) |dir| {
-        const lazy = std.Build.LazyPath{ .cwd_relative = dir };
-        mod.addIncludePath(lazy);
-        mod.addLibraryPath(lazy);
-        mod.addRPath(lazy);
-        mod.linkSystemLibrary("duckdb", .{});
-    } else if (b.lazyDependency("libduckdb", .{})) |dep| {
-        mod.addIncludePath(dep.path("."));
-        mod.addLibraryPath(dep.path("."));
-        mod.addRPath(dep.path("."));
+    // @cImport is gone in 0.17: duckdb.h is translated to a Zig module at
+    // build time and imported as "duckdb_c" (see src/db.zig).
+    const header: ?std.Build.LazyPath = if (duckdb_lib_dir) |dir|
+        .{ .cwd_relative = b.pathJoin(&.{ dir, "duckdb.h" }) }
+    else if (b.lazyDependency("libduckdb", .{})) |dep|
+        dep.path("duckdb.h")
+    else
+        null;
+
+    if (header) |h| {
+        const translate = b.addTranslateC(.{
+            .root_source_file = h,
+            .target = target,
+            .optimize = optimize,
+        });
+        mod.addImport("duckdb_c", translate.createModule());
+
+        const lib_path: std.Build.LazyPath = if (duckdb_lib_dir) |dir|
+            .{ .cwd_relative = dir }
+        else
+            b.lazyDependency("libduckdb", .{}).?.path(".");
+        mod.addLibraryPath(lib_path);
+        mod.addRPath(lib_path);
         mod.linkSystemLibrary("duckdb", .{});
     }
 

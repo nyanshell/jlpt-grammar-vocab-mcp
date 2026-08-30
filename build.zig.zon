@@ -2,7 +2,7 @@
     .name = .jlpt_grammar_mcp,
     .version = "0.1.0",
     .fingerprint = 0x14854aeabebf2b51,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0-dev.1933+e19a73c2d",
     .dependencies = .{
         .libduckdb = .{
             .url = "https://github.com/duckdb/duckdb/releases/download/v1.4.1/libduckdb-linux-amd64.zip",

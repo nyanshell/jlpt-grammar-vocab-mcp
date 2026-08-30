@@ -29,7 +29,7 @@ pub fn main(init: std.process.Init) !void {
             fatal("cannot create database directory {s}: {t}", .{ dir, err });
     }
 
-    const db_path_z = try gpa.dupeZ(u8, db_path);
+    const db_path_z = try gpa.dupeSentinel(u8, db_path, 0);
     defer gpa.free(db_path_z);
     var db = db_mod.Db.open(db_path_z) catch
         fatal("cannot open database at {s}", .{db_path});

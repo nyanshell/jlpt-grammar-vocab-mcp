@@ -48,14 +48,16 @@ Generate a secret with e.g. `openssl rand -hex 24`.
 
 ## Build and run locally
 
-Requires Zig `0.16.0`. The pinned `libduckdb` v1.4.1 release zip is fetched
-automatically by the Zig package manager. To keep the toolchain out of your
-home directory, extract it into the (gitignored) `toolchain/` folder:
+Requires Zig `0.17.0-dev.1933+e19a73c2d` (pinned; see notes below). The pinned
+`libduckdb` v1.4.1 release zip is fetched automatically by the Zig package
+manager. To keep the toolchain out of your home directory, extract it into the
+(gitignored) `toolchain/` folder:
 
 ```sh
+ZIGV=0.17.0-dev.1933+e19a73c2d
 mkdir -p toolchain
-curl -fsSL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz | tar -xJ -C toolchain
-export PATH="$PWD/toolchain/zig-x86_64-linux-0.16.0:$PATH"   # this shell only
+curl -fsSL "https://ziglang.org/builds/zig-x86_64-linux-$ZIGV.tar.xz" | tar -xJ -C toolchain
+export PATH="$PWD/toolchain/zig-x86_64-linux-$ZIGV:$PATH"    # this shell only
 export ZIG_GLOBAL_CACHE_DIR="$PWD/.zig-global-cache"         # optional: keep the cache local too
 
 zig build                       # or -Doptimize=ReleaseSafe
@@ -86,8 +88,9 @@ docker run -d -p 8080:8080 \
 
 The image is multi-stage (Zig toolchain + build → slim Debian runtime with
 `libduckdb.so`), runs as a non-root user, and stores the database in the `/data`
-volume. The Zig tarball comes from `ziglang.org/download` (stable releases are
-kept forever); `--build-arg ZIG_URL=...` overrides the source if needed.
+volume. Dev-build tarballs are eventually pruned from `ziglang.org/builds`; if
+the download 404s, pass `--build-arg ZIG_URL=...` pointing at a community
+mirror such as `https://pkg.hexops.org/zig/`.
 
 ## Connecting Claude
 
@@ -123,12 +126,13 @@ Single user by design: no users table, no sessions.
   all. Pure logic (SM-2, routing, JSON-RPC envelopes) is unit-tested directly;
   the DB layer, tool handlers, and MCP dispatch are integration-tested against
   an in-memory DuckDB (`:memory:`).
-- **Zig version pinning.** The code targets the post-“Writergate” `std.Io` API
-  of Zig 0.16: `main(init: std.process.Init)`, `std.Io.net`, `std.json.Stringify`,
-  buffer-fed readers/writers. CI (`mlugg/setup-zig`) and the Dockerfile pin the
-  same `0.16.0` release. Future Zig versions will require mechanical API
-  updates — and `@cImport` (used in `src/db.zig`) is slated for replacement by
-  the `addTranslateC` build step in a future release.
+- **Zig version pinning.** The code targets the post-“Writergate” `std.Io` API:
+  `main(init: std.process.Init)`, `std.Io.net`, `std.json.Stringify`, buffer-fed
+  readers/writers. CI (`mlugg/setup-zig`) and the Dockerfile pin the exact same
+  dev build; upgrading Zig may require mechanical API updates (the 0.17 cycle
+  removed `@cImport` — `duckdb.h` is now translated by an `addTranslateC` build
+  step and imported as the `duckdb_c` module — and renamed `Allocator.dupeZ` to
+  `dupeSentinel`).
 - **DuckDB API level.** `src/db.zig` uses the materialized value API
   (`duckdb_value_varchar` etc.), deprecated upstream but shipped in v1.4.x.
   Result sets here are tiny; a future move to `duckdb_fetch_chunk` is contained

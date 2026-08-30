@@ -5,7 +5,7 @@
 //! wrapper isolates a future move to duckdb_fetch_chunk in this one file.
 
 const std = @import("std");
-const c = @cImport(@cInclude("duckdb.h"));
+const c = @import("duckdb_c");
 
 pub const schema_sql: [:0]const u8 = @embedFile("schema.sql");
 
@@ -107,7 +107,7 @@ pub const Db = struct {
     /// Execute a single (optionally parameterized) statement and materialize
     /// the result into `arena`.
     pub fn query(self: *Db, arena: std.mem.Allocator, sql: []const u8, params: []const Param) DbError!Rows {
-        const sql_z = try arena.dupeZ(u8, sql);
+        const sql_z = try arena.dupeSentinel(u8, sql, 0);
         var result: c.duckdb_result = undefined;
 
         if (params.len == 0) {
@@ -129,7 +129,7 @@ pub const Db = struct {
                 const idx: c.idx_t = @intCast(i + 1);
                 const state = switch (p) {
                     .text => |t| blk: {
-                        const t_z = try arena.dupeZ(u8, t);
+                        const t_z = try arena.dupeSentinel(u8, t, 0);
                         break :blk c.duckdb_bind_varchar(stmt, idx, t_z.ptr);
                     },
                     .int => |v| c.duckdb_bind_int64(stmt, idx, v),

@@ -7,10 +7,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl xz-utils ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Stable release tarballs are kept forever on ziglang.org; the ARG remains
-# overridable (--build-arg ZIG_URL=...) for mirrors or version bumps.
-ARG ZIG_VERSION=0.16.0
-ARG ZIG_URL=https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz
+# Dev-build tarballs are eventually pruned from ziglang.org/builds; if this
+# 404s, override with --build-arg ZIG_URL=... pointing at a community mirror
+# (e.g. https://pkg.hexops.org/zig/zig-x86_64-linux-${ZIG_VERSION}.tar.xz).
+ARG ZIG_VERSION=0.17.0-dev.1933+e19a73c2d
+ARG ZIG_URL=https://ziglang.org/builds/zig-x86_64-linux-${ZIG_VERSION}.tar.xz
 RUN curl -fL "$ZIG_URL" | tar -xJ -C /opt && mv /opt/zig-* /opt/zig
 
 WORKDIR /src
