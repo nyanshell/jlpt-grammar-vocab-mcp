@@ -1,6 +1,8 @@
 .zig-cache/
+.zig-global-cache/
 zig-out/
 zig-pkg/
+toolchain/
 data/
 *.duckdb
 *.duckdb.wal
