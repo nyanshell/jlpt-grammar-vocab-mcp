@@ -1,7 +1,7 @@
 //! Thin wrapper over the DuckDB C API.
 //!
 //! Uses the materialized value API (duckdb_value_varchar & co). It is marked
-//! deprecated upstream but ships in v1.4.x; result sets here are tiny and the
+//! deprecated upstream but ships in v1.5.x; result sets here are tiny and the
 //! wrapper isolates a future move to duckdb_fetch_chunk in this one file.
 
 const std = @import("std");
