@@ -16,6 +16,11 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0-dev.1933+e19a73c2d
+          # setup-zig's built-in cache restores .zig-cache keyed only by zig
+          # version, so a build.zig.zon change meets stale dependency-resolution
+          # state and the build fails instantly (broke run 3 after the DuckDB
+          # bump). The zon-keyed cache step below handles packages instead.
+          use-cache: false
 
       - name: Cache fetched packages
         uses: actions/cache@v4
