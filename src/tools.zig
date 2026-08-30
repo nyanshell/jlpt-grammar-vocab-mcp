@@ -129,6 +129,14 @@ pub const registry = [_]Tool{
         .handler = recordReview,
     },
     .{
+        .name = "get_review_history",
+        .description = "Get past review results (the user's quiz and flashcard answer history), newest first. Filter by item type, a single item, a lookback window, or max_quality (e.g. 2 to see only failed recalls). Use this to report how recent sessions went and to find items worth re-drilling.",
+        .input_schema =
+        \\{"type":"object","properties":{"item_type":{"type":"string","enum":["grammar","vocab"]},"item_id":{"type":"integer","description":"History for one item; requires item_type"},"days":{"type":"integer","default":7,"description":"Lookback window in days; 1 = today only"},"max_quality":{"type":"integer","minimum":0,"maximum":5,"description":"Only reviews with quality at or below this"},"limit":{"type":"integer","default":50}}}
+        ,
+        .handler = getReviewHistory,
+    },
+    .{
         .name = "get_study_summary",
         .description = "Get overall study progress: item counts by learning status, reviews done today and this week, and how many items are due.",
         .input_schema =
@@ -776,6 +784,67 @@ fn writeReviewResult(
     try s.endObject();
 }
 
+fn getReviewHistory(ctx: *Ctx, args: ?std.json.Value) HandlerError!Outcome {
+    const type_filter = argStr(args, "item_type") orelse "%";
+    if (argStr(args, "item_type")) |t| {
+        if (!std.mem.eql(u8, t, "grammar") and !std.mem.eql(u8, t, "vocab"))
+            return .{ .err = "item_type must be grammar or vocab" };
+    }
+    const item_id = argInt(args, "item_id") orelse -1;
+    if (item_id >= 0 and argStr(args, "item_type") == null)
+        return .{ .err = "item_id requires item_type" };
+    const days = @max(1, @min(argInt(args, "days") orelse 7, 365));
+    const max_quality = argInt(args, "max_quality") orelse 5;
+    if (max_quality < 0 or max_quality > 5)
+        return .{ .err = "max_quality must be between 0 and 5" };
+    const limit = clampLimit(argInt(args, "limit"), 50);
+
+    const rows = try ctx.db.query(ctx.arena,
+        \\SELECT * FROM (
+        \\  SELECT rh.id AS review_id, rh.item_type, rh.item_id, g.pattern AS front, g.reading, g.meaning,
+        \\         rh.quality, rh.interval_after, rh.ease_after, rh.reviewed_at
+        \\  FROM review_history rh
+        \\  JOIN grammar_points g ON g.id = rh.item_id AND rh.item_type = 'grammar'
+        \\  UNION ALL
+        \\  SELECT rh.id, rh.item_type, rh.item_id, v.word, v.reading, v.meaning,
+        \\         rh.quality, rh.interval_after, rh.ease_after, rh.reviewed_at
+        \\  FROM review_history rh
+        \\  JOIN vocab v ON v.id = rh.item_id AND rh.item_type = 'vocab'
+        \\)
+        \\WHERE item_type LIKE ?
+        \\  AND (? < 0 OR item_id = ?)
+        \\  AND reviewed_at::DATE >= CURRENT_DATE - CAST(? AS INTEGER)
+        \\  AND quality <= ?
+        \\ORDER BY reviewed_at DESC, review_id DESC
+        \\LIMIT ?
+    , &.{
+        .{ .text = type_filter },
+        .{ .int = item_id },
+        .{ .int = item_id },
+        .{ .int = days - 1 },
+        .{ .int = max_quality },
+        .{ .int = limit },
+    });
+
+    var p: Payload = undefined;
+    p.init(ctx.arena);
+    writeReviewHistory(&p.s, rows) catch return error.OutOfMemory;
+    return p.finish();
+}
+
+fn writeReviewHistory(s: *Json, rows: db_mod.Rows) !void {
+    const cols = review_item_cols ++ [_]Col{
+        .{ .name = "quality", .kind = .int },
+        .{ .name = "interval_after", .kind = .int },
+        .{ .name = "ease_after", .kind = .float },
+        .{ .name = "reviewed_at" },
+    };
+    try s.beginObject();
+    try s.objectField("reviews");
+    try writeRowsArray(s, rows, &cols);
+    try s.endObject();
+}
+
 fn getStudySummary(ctx: *Ctx, args: ?std.json.Value) HandlerError!Outcome {
     _ = args;
     const rows = try ctx.db.query(ctx.arena,
@@ -1022,6 +1091,9 @@ test "handlers reject missing and invalid arguments" {
         .{ .tool = "record_review", .args = "{\"item_type\":\"grammar\",\"item_id\":1,\"quality\":6}", .expect = "quality must be between 0 and 5" },
         .{ .tool = "record_review", .args = "{\"item_type\":\"grammar\",\"item_id\":1,\"quality\":-1}", .expect = "quality must be between 0 and 5" },
         .{ .tool = "update_grammar", .args = "{\"nuance\":\"x\"}", .expect = "missing required argument: id" },
+        .{ .tool = "get_review_history", .args = "{\"item_type\":\"kanji\"}", .expect = "item_type must be grammar or vocab" },
+        .{ .tool = "get_review_history", .args = "{\"item_id\":1}", .expect = "item_id requires item_type" },
+        .{ .tool = "get_review_history", .args = "{\"max_quality\":6}", .expect = "max_quality must be between 0 and 5" },
     };
     for (cases) |case| {
         const msg = try env.callExpectError(case.tool, case.args);
@@ -1104,6 +1176,45 @@ test "updates change only the provided whitelisted fields" {
 
     const missing = try env.callExpectError("update_vocab", "{\"id\":999,\"meaning\":\"x\"}");
     try std.testing.expectEqualStrings("vocab id 999 not found", missing);
+}
+
+test "get_review_history returns past quiz results, newest first" {
+    var env: TestEnv = undefined;
+    try env.init();
+    defer env.deinit();
+
+    // Nothing reviewed yet: empty history, not an error.
+    const before = try env.call("get_review_history", "{}");
+    try std.testing.expectEqual(@as(usize, 0), before.object.get("reviews").?.array.items.len);
+
+    _ = try env.call("record_review", "{\"item_type\":\"grammar\",\"item_id\":1,\"quality\":5}");
+    _ = try env.call("record_review", "{\"item_type\":\"vocab\",\"item_id\":1,\"quality\":2}");
+
+    const all = try env.call("get_review_history", "{}");
+    const reviews = all.object.get("reviews").?.array;
+    try std.testing.expectEqual(@as(usize, 2), reviews.items.len);
+    // The vocab review came last, so it is first.
+    const latest = reviews.items[0].object;
+    try std.testing.expectEqualStrings("vocab", latest.get("item_type").?.string);
+    try std.testing.expectEqualStrings("顕著", latest.get("front").?.string);
+    try std.testing.expectEqual(@as(i64, 2), latest.get("quality").?.integer);
+    try std.testing.expect(latest.get("reviewed_at").?.string.len > 0);
+
+    // Failed recalls only.
+    const failures = try env.call("get_review_history", "{\"max_quality\":2}");
+    const failed = failures.object.get("reviews").?.array;
+    try std.testing.expectEqual(@as(usize, 1), failed.items.len);
+    try std.testing.expectEqualStrings("vocab", failed.items[0].object.get("item_type").?.string);
+
+    // Per-type and per-item filters.
+    const grammar_only = try env.call("get_review_history", "{\"item_type\":\"grammar\"}");
+    const g_reviews = grammar_only.object.get("reviews").?.array;
+    try std.testing.expectEqual(@as(usize, 1), g_reviews.items.len);
+    try std.testing.expectEqualStrings("〜んばかりに", g_reviews.items[0].object.get("front").?.string);
+
+    _ = try env.call("record_review", "{\"item_type\":\"vocab\",\"item_id\":1,\"quality\":4}");
+    const one_item = try env.call("get_review_history", "{\"item_type\":\"vocab\",\"item_id\":1}");
+    try std.testing.expectEqual(@as(usize, 2), one_item.object.get("reviews").?.array.items.len);
 }
 
 test "get_due_reviews respects include_new and new_limit" {

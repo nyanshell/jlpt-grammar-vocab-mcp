@@ -20,6 +20,7 @@ the database over time through the `add_*` / `update_*` tools.
 | `add_vocab` / `update_vocab` | Grow vocabulary content |
 | `get_due_reviews` | Items due for review today, plus a few never-studied items; filterable to grammar or vocab only |
 | `record_review` | Record a review result (quality 0–5) and reschedule with SM-2 |
+| `get_review_history` | Past quiz/flashcard results, newest first; filter by type, item, lookback window, or failures only |
 | `get_study_summary` | Progress counts, reviews today / this week, due counts |
 
 ## Protocol
